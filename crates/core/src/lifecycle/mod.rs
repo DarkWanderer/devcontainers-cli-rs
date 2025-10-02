@@ -1,10 +1,13 @@
 use std::{fmt::Display, path::PathBuf};
 
 use crate::{
-    config::ResolvedConfig,
+    config::{CommandDefinition, ResolvedConfig},
     provider::{Provider, RunningContainer},
-    Result,
+    DevcontainerError, Result,
 };
+
+const NO_POST_CREATE_COMMAND_REASON: &str = "No postCreate command defined in configuration";
+const NO_POST_ATTACH_COMMAND_REASON: &str = "No postAttach command defined in configuration";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum LifecyclePhase {
@@ -186,13 +189,18 @@ impl LifecyclePlan {
         );
 
         let LifecyclePlanOptions {
-            skip_post_create,
-            skip_post_attach,
+            mut skip_post_create,
+            mut skip_post_attach,
         } = options;
 
-        let post_create_action = match skip_post_create {
-            Some(reason) => HookAction::Skip { reason },
-            None => HookAction::Execute,
+        let post_create_action = if let Some(reason) = skip_post_create.take() {
+            HookAction::Skip { reason }
+        } else if config.post_create_command.is_none() {
+            HookAction::Skip {
+                reason: NO_POST_CREATE_COMMAND_REASON.to_string(),
+            }
+        } else {
+            HookAction::Execute
         };
 
         let post_create_code = match &post_create_action {
@@ -219,9 +227,14 @@ impl LifecyclePlan {
             ),
         );
 
-        let post_attach_action = match skip_post_attach {
-            Some(reason) => HookAction::Skip { reason },
-            None => HookAction::Execute,
+        let post_attach_action = if let Some(reason) = skip_post_attach.take() {
+            HookAction::Skip { reason }
+        } else if config.post_attach_command.is_none() {
+            HookAction::Skip {
+                reason: NO_POST_ATTACH_COMMAND_REASON.to_string(),
+            }
+        } else {
+            HookAction::Execute
         };
 
         let post_attach_code = match &post_attach_action {
@@ -357,11 +370,53 @@ impl<P: Provider> LifecycleExecutor<P> {
         self.provider.start_container(&container).await?;
         executed_phases.push(LifecyclePhase::Start);
 
-        if plan.step_for_phase(LifecyclePhase::PostCreate).is_some() {
+        if let Some(step) = plan.step_for_phase(LifecyclePhase::PostCreate) {
+            tracing::info!(
+                phase = %step.phase,
+                code = step.event.code,
+                message = %step.event.message,
+                "Executing lifecycle phase"
+            );
+
+            if let LifecycleEventDetail::Hook {
+                hook: LifecycleHook::PostCreate,
+                action,
+            } = &step.event.detail
+            {
+                self.handle_hook(
+                    LifecycleHook::PostCreate,
+                    action,
+                    config.post_create_command.as_ref(),
+                    &container,
+                )
+                .await?;
+            }
+
             executed_phases.push(LifecyclePhase::PostCreate);
         }
 
-        if plan.step_for_phase(LifecyclePhase::PostAttach).is_some() {
+        if let Some(step) = plan.step_for_phase(LifecyclePhase::PostAttach) {
+            tracing::info!(
+                phase = %step.phase,
+                code = step.event.code,
+                message = %step.event.message,
+                "Executing lifecycle phase"
+            );
+
+            if let LifecycleEventDetail::Hook {
+                hook: LifecycleHook::PostAttach,
+                action,
+            } = &step.event.detail
+            {
+                self.handle_hook(
+                    LifecycleHook::PostAttach,
+                    action,
+                    config.post_attach_command.as_ref(),
+                    &container,
+                )
+                .await?;
+            }
+
             executed_phases.push(LifecyclePhase::PostAttach);
         }
 
@@ -370,11 +425,76 @@ impl<P: Provider> LifecycleExecutor<P> {
             executed_phases,
         })
     }
+
+    async fn handle_hook(
+        &self,
+        hook: LifecycleHook,
+        action: &HookAction,
+        command: Option<&CommandDefinition>,
+        container: &RunningContainer,
+    ) -> Result<()> {
+        match action {
+            HookAction::Execute => {
+                if let Some(command) = command {
+                    self.run_hook(container, hook, command).await
+                } else {
+                    tracing::warn!(
+                        hook = %hook,
+                        "Hook marked for execution without a resolved command"
+                    );
+                    Ok(())
+                }
+            }
+            HookAction::Skip { reason } => {
+                tracing::info!(hook = %hook, reason = %reason, "Skipping lifecycle hook");
+                Ok(())
+            }
+        }
+    }
+
+    async fn run_hook(
+        &self,
+        container: &RunningContainer,
+        hook: LifecycleHook,
+        command: &CommandDefinition,
+    ) -> Result<()> {
+        let args = command.to_exec_args();
+        tracing::debug!(hook = %hook, command = ?args, "Executing lifecycle hook command");
+
+        let result = self.provider.exec(container, &args).await?;
+        tracing::debug!(hook = %hook, exit_code = result.exit_code, "Lifecycle hook completed");
+
+        let stdout = result.stdout.trim();
+        if !stdout.is_empty() {
+            tracing::info!(hook = %hook, stdout = %stdout, "Lifecycle hook stdout");
+        }
+
+        let stderr = result.stderr.trim();
+        if !stderr.is_empty() {
+            tracing::warn!(hook = %hook, stderr = %stderr, "Lifecycle hook stderr");
+        }
+
+        if result.exit_code != 0 {
+            let mut message = format!("{hook} command failed with exit code {}", result.exit_code);
+            if !stderr.is_empty() {
+                message.push_str(&format!(" ({stderr})"));
+            }
+            return Err(DevcontainerError::Provider(message));
+        }
+
+        Ok(())
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::provider::{
+        ExecResult, Provider, ProviderCleanupOptions, ProviderImage, ProviderKind,
+        ProviderPreparation, VolumeSpec,
+    };
+    use async_trait::async_trait;
+    use std::sync::{Arc, Mutex};
 
     fn sample_config() -> ResolvedConfig {
         ResolvedConfig {
@@ -385,6 +505,11 @@ mod tests {
             dockerfile: None,
             features: Default::default(),
             forward_ports: vec![],
+            post_create_command: Some(CommandDefinition::String("echo post create".to_string())),
+            post_attach_command: Some(CommandDefinition::Array(vec![
+                "echo".to_string(),
+                "post-attach".to_string(),
+            ])),
         }
     }
 
@@ -465,5 +590,254 @@ mod tests {
                 action: HookAction::Skip { ref reason }
             } if reason == "--skip-post-attach flag set"
         ));
+    }
+
+    #[test]
+    fn plan_for_up_skips_hooks_without_commands() {
+        let mut config = sample_config();
+        config.post_create_command = None;
+        config.post_attach_command = None;
+
+        let plan = LifecyclePlan::for_up(&config, LifecyclePlanOptions::default());
+
+        assert!(matches!(
+            plan.steps[4].event.detail,
+            LifecycleEventDetail::Hook {
+                hook: LifecycleHook::PostCreate,
+                action: HookAction::Skip { ref reason }
+            } if reason == super::NO_POST_CREATE_COMMAND_REASON
+        ));
+
+        assert!(matches!(
+            plan.steps[5].event.detail,
+            LifecycleEventDetail::Hook {
+                hook: LifecycleHook::PostAttach,
+                action: HookAction::Skip { ref reason }
+            } if reason == super::NO_POST_ATTACH_COMMAND_REASON
+        ));
+    }
+
+    #[derive(Clone)]
+    struct TestProvider {
+        state: Arc<Mutex<TestProviderState>>,
+    }
+
+    struct TestProviderState {
+        exec_calls: Vec<Vec<String>>,
+        exec_result: ExecResult,
+    }
+
+    impl TestProvider {
+        fn new(exec_result: ExecResult) -> Self {
+            Self {
+                state: Arc::new(Mutex::new(TestProviderState {
+                    exec_calls: Vec::new(),
+                    exec_result,
+                })),
+            }
+        }
+
+        fn exec_calls(&self) -> Vec<Vec<String>> {
+            let state = self.state.lock().expect("state lock");
+            state.exec_calls.clone()
+        }
+    }
+
+    #[async_trait]
+    impl Provider for TestProvider {
+        fn kind(&self) -> ProviderKind {
+            ProviderKind::Mock
+        }
+
+        async fn prepare(&self, _config: &ResolvedConfig) -> Result<ProviderPreparation> {
+            Ok(ProviderPreparation {
+                image: ProviderImage::Reference("example:image".to_string()),
+                container_name: "test-container".to_string(),
+                project_slug: "demo".to_string(),
+                networks: vec!["test-network".to_string()],
+                volumes: vec![VolumeSpec {
+                    name: "test-volume".to_string(),
+                    mount_path: PathBuf::from("/data"),
+                }],
+                workspace_mount_path: PathBuf::from("/workspace"),
+            })
+        }
+
+        async fn ensure_networks(
+            &self,
+            _config: &ResolvedConfig,
+            _preparation: &ProviderPreparation,
+        ) -> Result<()> {
+            Ok(())
+        }
+
+        async fn ensure_volumes(
+            &self,
+            _config: &ResolvedConfig,
+            _preparation: &ProviderPreparation,
+        ) -> Result<()> {
+            Ok(())
+        }
+
+        async fn build_image(
+            &self,
+            _config: &ResolvedConfig,
+            _preparation: &ProviderPreparation,
+        ) -> Result<String> {
+            Ok("example:image:latest".to_string())
+        }
+
+        async fn create_container(
+            &self,
+            _config: &ResolvedConfig,
+            _preparation: &ProviderPreparation,
+            _image_reference: &str,
+        ) -> Result<RunningContainer> {
+            Ok(RunningContainer {
+                id: Some("container-id".to_string()),
+                name: Some("test-container".to_string()),
+            })
+        }
+
+        async fn start_container(&self, _container: &RunningContainer) -> Result<()> {
+            Ok(())
+        }
+
+        async fn exec(
+            &self,
+            _container: &RunningContainer,
+            command: &[String],
+        ) -> Result<ExecResult> {
+            let result = {
+                let mut state = self.state.lock().expect("state lock");
+                state.exec_calls.push(command.to_vec());
+                state.exec_result.clone()
+            };
+            Ok(result)
+        }
+
+        async fn stop_container(
+            &self,
+            _config: &ResolvedConfig,
+            _preparation: &ProviderPreparation,
+            _container: &RunningContainer,
+        ) -> Result<()> {
+            Ok(())
+        }
+
+        async fn cleanup(
+            &self,
+            _config: &ResolvedConfig,
+            _preparation: &ProviderPreparation,
+            _options: &ProviderCleanupOptions,
+        ) -> Result<()> {
+            Ok(())
+        }
+    }
+
+    #[tokio::test]
+    async fn executor_runs_hooks_via_provider_exec() {
+        let config = sample_config();
+        let plan = LifecyclePlan::for_up(&config, LifecyclePlanOptions::default());
+        let provider = TestProvider::new(ExecResult::default());
+        let executor = LifecycleExecutor::new(provider.clone());
+
+        let outcome = executor
+            .execute(&config, &plan)
+            .await
+            .expect("lifecycle execution succeeds");
+
+        assert_eq!(
+            outcome.executed_phases,
+            vec![
+                LifecyclePhase::Resolve,
+                LifecyclePhase::Build,
+                LifecyclePhase::Create,
+                LifecyclePhase::Start,
+                LifecyclePhase::PostCreate,
+                LifecyclePhase::PostAttach,
+            ]
+        );
+
+        let calls = provider.exec_calls();
+        assert_eq!(calls.len(), 2);
+        assert_eq!(
+            calls[0],
+            vec![
+                "/bin/sh".to_string(),
+                "-c".to_string(),
+                "echo post create".to_string(),
+            ]
+        );
+        assert_eq!(
+            calls[1],
+            vec!["echo".to_string(), "post-attach".to_string()]
+        );
+    }
+
+    #[tokio::test]
+    async fn executor_fails_when_hook_returns_non_zero() {
+        let config = sample_config();
+        let plan = LifecyclePlan::for_up(&config, LifecyclePlanOptions::default());
+        let provider = TestProvider::new(ExecResult {
+            exit_code: 5,
+            stdout: String::new(),
+            stderr: "boom".to_string(),
+        });
+        let executor = LifecycleExecutor::new(provider.clone());
+
+        let err = executor
+            .execute(&config, &plan)
+            .await
+            .expect_err("postCreate failure propagates");
+
+        match err {
+            DevcontainerError::Provider(message) => {
+                assert!(message.contains("postCreate"));
+                assert!(message.contains("5"));
+                assert!(message.contains("boom"));
+            }
+            other => panic!("Unexpected error: {other:?}"),
+        }
+
+        let calls = provider.exec_calls();
+        assert_eq!(calls.len(), 1);
+        assert_eq!(
+            calls[0],
+            vec![
+                "/bin/sh".to_string(),
+                "-c".to_string(),
+                "echo post create".to_string(),
+            ]
+        );
+    }
+
+    #[tokio::test]
+    async fn executor_skips_hooks_when_commands_absent() {
+        let mut config = sample_config();
+        config.post_create_command = None;
+        config.post_attach_command = None;
+
+        let plan = LifecyclePlan::for_up(&config, LifecyclePlanOptions::default());
+        let provider = TestProvider::new(ExecResult::default());
+        let executor = LifecycleExecutor::new(provider.clone());
+
+        let outcome = executor
+            .execute(&config, &plan)
+            .await
+            .expect("lifecycle execution succeeds without hooks");
+
+        assert!(provider.exec_calls().is_empty());
+        assert_eq!(
+            outcome.executed_phases,
+            vec![
+                LifecyclePhase::Resolve,
+                LifecyclePhase::Build,
+                LifecyclePhase::Create,
+                LifecyclePhase::Start,
+                LifecyclePhase::PostCreate,
+                LifecyclePhase::PostAttach,
+            ]
+        );
     }
 }

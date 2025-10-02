@@ -650,6 +650,8 @@ mod tests {
             dockerfile: None,
             features: Default::default(),
             forward_ports: vec![],
+            post_create_command: None,
+            post_attach_command: None,
         };
 
         let preparation = provider.prepare(&config).await.unwrap();

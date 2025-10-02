@@ -49,6 +49,10 @@ pub struct DevcontainerConfig {
     pub features: Map<String, Value>,
     #[serde(default, rename = "forwardPorts")]
     pub forward_ports: Vec<ForwardPortDefinition>,
+    #[serde(default, rename = "postCreateCommand")]
+    pub post_create_command: Option<CommandDefinition>,
+    #[serde(default, rename = "postAttachCommand")]
+    pub post_attach_command: Option<CommandDefinition>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -101,6 +105,24 @@ impl TryFrom<ForwardPortDefinition> for ForwardPort {
     }
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(untagged)]
+pub enum CommandDefinition {
+    String(String),
+    Array(Vec<String>),
+}
+
+impl CommandDefinition {
+    pub fn to_exec_args(&self) -> Vec<String> {
+        match self {
+            CommandDefinition::String(command) => {
+                vec!["/bin/sh".to_string(), "-c".to_string(), command.clone()]
+            }
+            CommandDefinition::Array(args) => args.clone(),
+        }
+    }
+}
+
 /// Normalized configuration after resolving overrides and defaults.
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct ResolvedConfig {
@@ -115,6 +137,10 @@ pub struct ResolvedConfig {
     pub features: Map<String, Value>,
     #[serde(default)]
     pub forward_ports: Vec<ForwardPort>,
+    #[serde(default)]
+    pub post_create_command: Option<CommandDefinition>,
+    #[serde(default)]
+    pub post_attach_command: Option<CommandDefinition>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -186,6 +212,8 @@ impl ConfigResolver {
             workspace_folder: config_workspace_folder,
             features,
             forward_ports: raw_forward_ports,
+            post_create_command,
+            post_attach_command,
         } = config;
 
         let forward_ports: Vec<ForwardPort> = raw_forward_ports
@@ -250,6 +278,8 @@ impl ConfigResolver {
             dockerfile,
             features,
             forward_ports,
+            post_create_command,
+            post_attach_command,
         })
     }
 }
@@ -335,6 +365,8 @@ mod tests {
                 3000,
                 {"localPort": 9229, "containerPort": 9229, "protocol": "udp"}
             ],
+            "postCreateCommand": "echo post create",
+            "postAttachCommand": ["echo", "post-attach"],
             "features": {
                 "ghcr.io/devcontainers/features/node:1": {
                     "version": "18"
@@ -362,6 +394,17 @@ mod tests {
         assert!(resolved
             .features
             .contains_key("ghcr.io/devcontainers/features/node:1"));
+        assert_eq!(
+            resolved.post_create_command,
+            Some(CommandDefinition::String("echo post create".to_string()))
+        );
+        assert_eq!(
+            resolved.post_attach_command,
+            Some(CommandDefinition::Array(vec![
+                "echo".to_string(),
+                "post-attach".to_string()
+            ]))
+        );
     }
 
     #[test]
