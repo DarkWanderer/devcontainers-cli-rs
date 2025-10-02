@@ -1,0 +1,14 @@
+[package]
+name = "devcontainer-provider-docker"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+async-trait = { workspace = true }
+devcontainer-core = { path = "../../core" }
+tokio = { workspace = true }
+tracing = { workspace = true }
+which = "5"
+
+[dev-dependencies]
+tempfile = "3"

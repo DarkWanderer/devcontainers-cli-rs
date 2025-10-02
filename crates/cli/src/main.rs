@@ -1,9 +1,13 @@
 use std::path::PathBuf;
 
+use async_trait::async_trait;
 use clap::{Args, Parser, Subcommand, ValueEnum};
 use devcontainer_core::{
-    config::{ConfigOverrides, ConfigResolver, ConfigSource},
-    lifecycle::{LifecycleExecutor, LifecyclePhase, LifecyclePlan},
+    config::{ConfigOverrides, ConfigResolver, ConfigSource, ResolvedConfig},
+    lifecycle::{LifecycleExecutor, LifecyclePlan, LifecyclePlanOptions},
+    provider::{
+        ExecResult, Provider, ProviderImage, ProviderKind, ProviderPreparation, RunningContainer,
+    },
     telemetry::{self, LogFormat},
     DevcontainerError, Result,
 };
@@ -78,12 +82,17 @@ impl UpArgs {
         let resolver = ConfigResolver::new(source).with_overrides(ctx.config_overrides());
         let resolved = resolver.resolve()?;
 
-        let mut plan = LifecyclePlan::new();
-        plan.push(
-            LifecyclePhase::Resolve,
-            "Resolve devcontainer configuration",
+        let plan = LifecyclePlan::for_up(
+            &resolved,
+            LifecyclePlanOptions {
+                skip_post_create: self
+                    .skip_post_create
+                    .then(|| "--skip-post-create flag set".to_string()),
+                skip_post_attach: self
+                    .skip_post_attach
+                    .then(|| "--skip-post-attach flag set".to_string()),
+            },
         );
-        plan.push(LifecyclePhase::Start, "Start devcontainer runtime");
 
         let executor = LifecycleExecutor::new(NullProvider);
         let outcome = executor.execute(&resolved, &plan).await?;
@@ -289,9 +298,65 @@ impl CommandContext {
 
 struct NullProvider;
 
-impl devcontainer_core::provider::Provider for NullProvider {
-    fn kind(&self) -> devcontainer_core::provider::ProviderKind {
-        devcontainer_core::provider::ProviderKind::Mock
+#[async_trait]
+impl Provider for NullProvider {
+    fn kind(&self) -> ProviderKind {
+        ProviderKind::Mock
+    }
+
+    async fn prepare(&self, config: &ResolvedConfig) -> Result<ProviderPreparation> {
+        Ok(ProviderPreparation {
+            image: ProviderImage::Reference("mock:image".to_string()),
+            container_name: format!("mock-{}", config.project_name),
+            project_slug: config.project_name.clone(),
+            networks: Vec::new(),
+            volumes: Vec::new(),
+            workspace_mount_path: config.workspace_folder.clone(),
+        })
+    }
+
+    async fn ensure_networks(
+        &self,
+        _config: &ResolvedConfig,
+        _preparation: &ProviderPreparation,
+    ) -> Result<()> {
+        Ok(())
+    }
+
+    async fn ensure_volumes(
+        &self,
+        _config: &ResolvedConfig,
+        _preparation: &ProviderPreparation,
+    ) -> Result<()> {
+        Ok(())
+    }
+
+    async fn build_image(
+        &self,
+        _config: &ResolvedConfig,
+        preparation: &ProviderPreparation,
+    ) -> Result<String> {
+        Ok(preparation.image.reference().to_string())
+    }
+
+    async fn create_container(
+        &self,
+        _config: &ResolvedConfig,
+        preparation: &ProviderPreparation,
+        _image_reference: &str,
+    ) -> Result<RunningContainer> {
+        Ok(RunningContainer {
+            id: Some(format!("{}-id", preparation.container_name)),
+            name: Some(preparation.container_name.clone()),
+        })
+    }
+
+    async fn start_container(&self, _container: &RunningContainer) -> Result<()> {
+        Ok(())
+    }
+
+    async fn exec(&self, _container: &RunningContainer, _command: &[String]) -> Result<ExecResult> {
+        Ok(ExecResult::default())
     }
 }
 

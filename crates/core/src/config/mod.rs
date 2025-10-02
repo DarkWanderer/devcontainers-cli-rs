@@ -111,6 +111,8 @@ pub struct ResolvedConfig {
     #[serde(default)]
     pub image_reference: Option<String>,
     #[serde(default)]
+    pub dockerfile: Option<PathBuf>,
+    #[serde(default)]
     pub features: Map<String, Value>,
     #[serde(default)]
     pub forward_ports: Vec<ForwardPort>,
@@ -181,7 +183,7 @@ impl ConfigResolver {
         let DevcontainerConfig {
             name,
             image,
-            docker_file: _,
+            docker_file,
             workspace_folder: config_workspace_folder,
             features,
             forward_ports: raw_forward_ports,
@@ -196,6 +198,15 @@ impl ConfigResolver {
             .parent()
             .map(Path::to_path_buf)
             .unwrap_or_else(|| PathBuf::from("."));
+
+        let dockerfile = docker_file.map(|path| {
+            let path = PathBuf::from(path);
+            if path.is_absolute() {
+                path
+            } else {
+                config_dir.join(path)
+            }
+        });
 
         let workspace_root = match &self.source {
             ConfigSource::Workspace(path) => path.clone(),
@@ -237,6 +248,7 @@ impl ConfigResolver {
             workspace_folder,
             config_path,
             image_reference,
+            dockerfile,
             features,
             forward_ports,
         })
@@ -381,6 +393,7 @@ mod tests {
             resolved.workspace_folder,
             workspace_path.join("nested/project")
         );
+        assert!(resolved.dockerfile.is_none());
     }
 
     #[test]
@@ -414,6 +427,7 @@ mod tests {
         assert_eq!(resolved.project_name, "override");
         assert_eq!(resolved.workspace_folder, workspace_override);
         assert_eq!(resolved.image_reference.as_deref(), Some("override:image"));
+        assert!(resolved.dockerfile.is_none());
     }
 
     #[test]
@@ -441,5 +455,32 @@ mod tests {
             }
             other => panic!("unexpected error: {other:?}"),
         }
+    }
+
+    #[test]
+    fn resolve_resolves_dockerfile_path_relative_to_config() {
+        let workspace = tempdir().expect("tempdir");
+        let workspace_path = workspace.path();
+        let devcontainer_dir = workspace_path.join(".devcontainer");
+        fs::create_dir_all(&devcontainer_dir).expect("create devcontainer dir");
+        let config_path = devcontainer_dir.join("devcontainer.json");
+        let dockerfile_path = devcontainer_dir.join("Dockerfile");
+
+        let config = json!({
+            "name": "dockerfile",
+            "dockerFile": "Dockerfile",
+            "forwardPorts": []
+        });
+        fs::write(&config_path, serde_json::to_string_pretty(&config).unwrap())
+            .expect("write config");
+        fs::write(&dockerfile_path, "FROM scratch\n").expect("write dockerfile");
+
+        let resolver = ConfigResolver::new(ConfigSource::Workspace(workspace_path.to_path_buf()));
+        let resolved = resolver.resolve().expect("resolve config");
+
+        assert_eq!(
+            resolved.dockerfile.as_ref().expect("expected dockerfile"),
+            &dockerfile_path
+        );
     }
 }

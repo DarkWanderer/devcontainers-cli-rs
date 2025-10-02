@@ -1,0 +1,7 @@
+[test_config]
+exclude-files = ["target/*"]
+out = ["Html", "Lcov", "Stdout", "Xml"]
+output-dir = "./coverage"
+skip-clean = true
+target-dir = "./target/tarpaulin"
+workspace = true

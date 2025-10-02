@@ -9,6 +9,7 @@ name = "devcontainer"
 path = "src/main.rs"
 
 [dependencies]
+async-trait.workspace = true
 anyhow.workspace = true
 clap.workspace = true
 devcontainer-core = { path = "../core" }
