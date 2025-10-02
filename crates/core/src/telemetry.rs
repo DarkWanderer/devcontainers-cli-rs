@@ -5,17 +5,12 @@ use tracing_subscriber::EnvFilter;
 
 use crate::Result;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum LogFormat {
+    #[default]
     Auto,
     Text,
     Json,
-}
-
-impl Default for LogFormat {
-    fn default() -> Self {
-        LogFormat::Auto
-    }
 }
 
 pub fn init(level: &str, format: LogFormat) -> Result<()> {

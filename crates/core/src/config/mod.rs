@@ -19,7 +19,7 @@ static DEVCONTAINER_SCHEMA: Lazy<JSONSchema> = Lazy::new(|| {
 });
 
 fn validate_against_schema(document: &Value) -> Result<()> {
-    if let Err(errors) = (&*DEVCONTAINER_SCHEMA).validate(document) {
+    if let Err(errors) = DEVCONTAINER_SCHEMA.validate(document) {
         let messages: Vec<String> = errors.map(|err| err.to_string()).collect();
         let message = if messages.is_empty() {
             "Unknown validation error".to_string()
@@ -27,8 +27,7 @@ fn validate_against_schema(document: &Value) -> Result<()> {
             messages.join("; ")
         };
         return Err(DevcontainerError::Configuration(format!(
-            "Invalid devcontainer.json: {}",
-            message
+            "Invalid devcontainer.json: {message}"
         )));
     }
 
@@ -277,8 +276,7 @@ impl ConfigSource {
                 }
 
                 Err(DevcontainerError::Configuration(format!(
-                    "Failed to locate devcontainer.json under {:?}",
-                    path
+                    "Failed to locate devcontainer.json under {path:?}"
                 )))
             }
             ConfigSource::ExplicitFile(path) => {
@@ -286,8 +284,7 @@ impl ConfigSource {
                     Ok(path.clone())
                 } else {
                     Err(DevcontainerError::Configuration(format!(
-                        "Configuration file {:?} does not exist",
-                        path
+                        "Configuration file {path:?} does not exist"
                     )))
                 }
             }

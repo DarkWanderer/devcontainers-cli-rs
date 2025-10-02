@@ -43,7 +43,7 @@ enum OutputFormat {
 }
 
 impl OutputFormat {
-    fn to_core(self) -> LogFormat {
+    fn to_core(&self) -> LogFormat {
         match self {
             OutputFormat::Auto => LogFormat::Auto,
             OutputFormat::Text => LogFormat::Text,
@@ -58,7 +58,8 @@ enum Commands {
     Down(DownArgs),
     Build(BuildArgs),
     Exec(ExecArgs),
-    RunUserCommands(RunUserCommandsArgs),
+    #[command(name = "run-user-commands")]
+    RunUser(RunUserCommandsArgs),
     ReadConfiguration(ReadConfigurationArgs),
     Features(FeaturesArgs),
     Templates(TemplatesArgs),
@@ -199,7 +200,7 @@ impl ReadConfigurationArgs {
         let resolved = resolver.resolve()?;
         let output = serde_json::to_string_pretty(&resolved)
             .map_err(|err| DevcontainerError::Other(err.into()))?;
-        println!("{}", output);
+        println!("{output}");
         Ok(())
     }
 }
@@ -364,7 +365,7 @@ impl Provider for NullProvider {
 async fn main() -> Result<()> {
     let cli = Cli::parse();
 
-    let log_format = cli.log_format.clone().to_core();
+    let log_format = cli.log_format.to_core();
     let verbosity = match cli.verbose {
         0 => "info",
         1 => "debug",
@@ -380,7 +381,7 @@ async fn main() -> Result<()> {
         Commands::Down(args) => args.run(&ctx).await?,
         Commands::Build(args) => args.run(&ctx).await?,
         Commands::Exec(args) => args.run(&ctx).await?,
-        Commands::RunUserCommands(args) => args.run(&ctx).await?,
+        Commands::RunUser(args) => args.run(&ctx).await?,
         Commands::ReadConfiguration(args) => args.run(&ctx).await?,
         Commands::Features(args) => args.run(&ctx).await?,
         Commands::Templates(args) => args.run(&ctx).await?,

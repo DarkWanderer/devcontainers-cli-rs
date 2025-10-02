@@ -36,6 +36,12 @@ impl DockerProvider {
     }
 }
 
+impl Default for DockerProvider {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 #[async_trait]
 impl Provider for DockerProvider {
     fn kind(&self) -> ProviderKind {
@@ -279,18 +285,12 @@ impl Provider for DockerProvider {
         args.push(workspace_dst.clone());
 
         args.push("--mount".to_string());
-        args.push(format!(
-            "type=bind,src={},dst={}",
-            workspace_src, workspace_dst
-        ));
+        args.push(format!("type=bind,src={workspace_src},dst={workspace_dst}"));
 
         for volume in &preparation.volumes {
             let mount_path = path_to_string(&volume.mount_path)?;
             args.push("--mount".to_string());
-            args.push(format!(
-                "type=volume,src={},dst={}",
-                volume.name, mount_path
-            ));
+            args.push(format!("type=volume,src={},dst={mount_path}", volume.name));
         }
 
         args.push(image_reference.to_string());

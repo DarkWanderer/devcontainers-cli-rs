@@ -11,21 +11,11 @@ pub enum ProviderKind {
     Mock,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct ProviderCapabilities {
     pub supports_features: bool,
     pub supports_templates: bool,
     pub supports_attach: bool,
-}
-
-impl Default for ProviderCapabilities {
-    fn default() -> Self {
-        Self {
-            supports_features: false,
-            supports_templates: false,
-            supports_attach: false,
-        }
-    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

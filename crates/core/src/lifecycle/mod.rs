@@ -87,7 +87,7 @@ impl Display for LifecycleHook {
             LifecycleHook::PostCreate => "postCreate",
             LifecycleHook::PostAttach => "postAttach",
         };
-        write!(f, "{}", name)
+        write!(f, "{name}")
     }
 }
 
