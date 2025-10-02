@@ -7,8 +7,8 @@ use async_trait::async_trait;
 use devcontainer_core::{
     config::ResolvedConfig,
     provider::{
-        ExecResult, Provider, ProviderBuildContext, ProviderImage, ProviderKind,
-        ProviderPreparation, RunningContainer, VolumeSpec,
+        ExecResult, Provider, ProviderBuildContext, ProviderCleanupOptions, ProviderImage,
+        ProviderKind, ProviderPreparation, RunningContainer, VolumeSpec,
     },
     DevcontainerError, Result,
 };
@@ -344,6 +344,125 @@ impl Provider for DockerProvider {
             stdout: output.stdout,
             stderr: output.stderr,
         })
+    }
+
+    async fn stop_container(
+        &self,
+        _config: &ResolvedConfig,
+        preparation: &ProviderPreparation,
+        container: &RunningContainer,
+    ) -> Result<()> {
+        let cli = self.cli()?;
+
+        let identifier = container
+            .name
+            .as_ref()
+            .or(container.id.as_ref())
+            .cloned()
+            .unwrap_or_else(|| preparation.container_name.clone());
+
+        let output = cli
+            .run(vec![
+                "container".to_string(),
+                "stop".to_string(),
+                identifier.clone(),
+            ])
+            .await?;
+
+        if output.status.success() {
+            info!(container = %identifier, "Stopped container");
+            return Ok(());
+        }
+
+        if output.stderr.contains("No such container") || output.stderr.contains("is not running") {
+            debug!(container = %identifier, stderr = %output.stderr.trim(), "Container already stopped or missing");
+            return Ok(());
+        }
+
+        Err(DevcontainerError::Provider(format!(
+            "Failed to stop container {identifier}: {}",
+            output.stderr.trim()
+        )))
+    }
+
+    async fn cleanup(
+        &self,
+        _config: &ResolvedConfig,
+        preparation: &ProviderPreparation,
+        options: &ProviderCleanupOptions,
+    ) -> Result<()> {
+        let cli = self.cli()?;
+        let mut args = vec![
+            "container".to_string(),
+            "rm".to_string(),
+            "--force".to_string(),
+        ];
+
+        if options.remove_volumes {
+            args.push("--volumes".to_string());
+        }
+
+        args.push(preparation.container_name.clone());
+
+        let remove_container = cli.run(args).await?;
+        if !remove_container.status.success()
+            && !remove_container.stderr.contains("No such container")
+        {
+            return Err(DevcontainerError::Provider(format!(
+                "Failed to remove container {}: {}",
+                preparation.container_name,
+                remove_container.stderr.trim()
+            )));
+        }
+
+        for network in &preparation.networks {
+            let output = cli
+                .run(vec![
+                    "network".to_string(),
+                    "rm".to_string(),
+                    network.clone(),
+                ])
+                .await?;
+            if output.status.success() {
+                info!(network = %network, "Removed docker network");
+            } else if output.stderr.contains("No such network") {
+                debug!(network = %network, "Docker network already absent");
+            } else {
+                return Err(DevcontainerError::Provider(format!(
+                    "Failed to remove docker network {network}: {}",
+                    output.stderr.trim()
+                )));
+            }
+        }
+
+        if options.remove_volumes {
+            for volume in &preparation.volumes {
+                let output = cli
+                    .run(vec![
+                        "volume".to_string(),
+                        "rm".to_string(),
+                        volume.name.clone(),
+                    ])
+                    .await?;
+                if output.status.success() {
+                    info!(volume = %volume.name, "Removed docker volume");
+                } else if output.stderr.contains("No such volume") {
+                    debug!(volume = %volume.name, "Docker volume already absent");
+                } else {
+                    return Err(DevcontainerError::Provider(format!(
+                        "Failed to remove docker volume {}: {}",
+                        volume.name,
+                        output.stderr.trim()
+                    )));
+                }
+            }
+        }
+
+        if options.remove_unknown {
+            warn!("remove-unknown cleanup not implemented for docker provider");
+        }
+
+        Ok(())
     }
 }
 

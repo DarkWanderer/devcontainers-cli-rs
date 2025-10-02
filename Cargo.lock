@@ -264,6 +264,7 @@ dependencies = [
  "async-trait",
  "clap",
  "devcontainer-core",
+ "devcontainer-provider-docker",
  "serde",
  "serde_json",
  "tokio",

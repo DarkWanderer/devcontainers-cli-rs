@@ -267,6 +267,10 @@ impl<P: Provider> LifecycleExecutor<P> {
         Self { provider }
     }
 
+    pub fn provider(&self) -> &P {
+        &self.provider
+    }
+
     pub async fn execute(
         &self,
         config: &ResolvedConfig,

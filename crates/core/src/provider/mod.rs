@@ -69,6 +69,12 @@ pub struct ExecResult {
     pub stderr: String,
 }
 
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct ProviderCleanupOptions {
+    pub remove_volumes: bool,
+    pub remove_unknown: bool,
+}
+
 #[async_trait]
 pub trait Provider: Send + Sync {
     fn kind(&self) -> ProviderKind;
@@ -107,4 +113,18 @@ pub trait Provider: Send + Sync {
     async fn start_container(&self, container: &RunningContainer) -> Result<()>;
 
     async fn exec(&self, container: &RunningContainer, command: &[String]) -> Result<ExecResult>;
+
+    async fn stop_container(
+        &self,
+        config: &ResolvedConfig,
+        preparation: &ProviderPreparation,
+        container: &RunningContainer,
+    ) -> Result<()>;
+
+    async fn cleanup(
+        &self,
+        config: &ResolvedConfig,
+        preparation: &ProviderPreparation,
+        options: &ProviderCleanupOptions,
+    ) -> Result<()>;
 }

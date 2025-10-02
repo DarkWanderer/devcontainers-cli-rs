@@ -1,16 +1,14 @@
 use std::path::PathBuf;
 
-use async_trait::async_trait;
 use clap::{Args, Parser, Subcommand, ValueEnum};
 use devcontainer_core::{
-    config::{ConfigOverrides, ConfigResolver, ConfigSource, ResolvedConfig},
+    config::{ConfigOverrides, ConfigResolver, ConfigSource},
     lifecycle::{LifecycleExecutor, LifecyclePlan, LifecyclePlanOptions},
-    provider::{
-        ExecResult, Provider, ProviderImage, ProviderKind, ProviderPreparation, RunningContainer,
-    },
+    provider::{Provider, ProviderCleanupOptions, RunningContainer},
     telemetry::{self, LogFormat},
     DevcontainerError, Result,
 };
+use devcontainer_provider_docker::DockerProvider;
 
 #[derive(Parser, Debug)]
 #[command(
@@ -31,6 +29,8 @@ struct Cli {
     workspace_folder: Option<PathBuf>,
     #[arg(long = "config", global = true)]
     config: Option<PathBuf>,
+    #[arg(long = "docker-path", global = true)]
+    docker_path: Option<PathBuf>,
     #[command(subcommand)]
     command: Commands,
 }
@@ -95,7 +95,8 @@ impl UpArgs {
             },
         );
 
-        let executor = LifecycleExecutor::new(NullProvider);
+        let provider = ctx.provider();
+        let executor = LifecycleExecutor::new(provider);
         let outcome = executor.execute(&resolved, &plan).await?;
 
         tracing::info!(?outcome.container, "Devcontainer is ready");
@@ -125,12 +126,35 @@ struct DownArgs {
 }
 
 impl DownArgs {
-    async fn run(&self, _ctx: &CommandContext) -> Result<()> {
+    async fn run(&self, ctx: &CommandContext) -> Result<()> {
+        let source = ctx.config_source();
+        let resolver = ConfigResolver::new(source).with_overrides(ctx.config_overrides());
+        let resolved = resolver.resolve()?;
+
+        let provider = ctx.provider();
+        let preparation = provider.prepare(&resolved).await?;
+        let container = RunningContainer {
+            id: None,
+            name: Some(preparation.container_name.clone()),
+        };
+
+        provider
+            .stop_container(&resolved, &preparation, &container)
+            .await?;
+
+        let options = ProviderCleanupOptions {
+            remove_volumes: self.remove_volumes,
+            remove_unknown: self.remove_unknown,
+        };
+
+        provider.cleanup(&resolved, &preparation, &options).await?;
+
         tracing::info!(
             remove_volumes = self.remove_volumes,
             remove_unknown = self.remove_unknown,
-            "Stopping devcontainer (stub)",
+            "Devcontainer resources cleaned up",
         );
+
         Ok(())
     }
 }
@@ -149,12 +173,19 @@ impl BuildArgs {
         let resolver = ConfigResolver::new(source).with_overrides(ctx.config_overrides());
         let resolved = resolver.resolve()?;
 
-        tracing::info!(
-            ?resolved,
-            no_cache = self.no_cache,
-            push = self.push,
-            "Build command invoked (stub)",
-        );
+        if self.no_cache {
+            tracing::warn!("--no-cache flag is not yet implemented; proceeding with cached build");
+        }
+        if self.push {
+            tracing::warn!("--push flag is not yet implemented; build output will remain local");
+        }
+
+        let provider = ctx.provider();
+        let preparation = provider.prepare(&resolved).await?;
+        let image_reference = provider.build_image(&resolved, &preparation).await?;
+
+        tracing::info!(image = %image_reference, "Devcontainer image ready");
+        println!("{image_reference}");
         Ok(())
     }
 }
@@ -168,8 +199,52 @@ struct ExecArgs {
 }
 
 impl ExecArgs {
-    async fn run(&self, _ctx: &CommandContext) -> Result<()> {
-        tracing::info!(?self.command, "Executing command in container (stub)");
+    async fn run(&self, ctx: &CommandContext) -> Result<()> {
+        if self.command.is_empty() {
+            return Err(DevcontainerError::Configuration(
+                "devcontainer exec requires a command to run".into(),
+            ));
+        }
+
+        if self.id_label.is_some() {
+            tracing::warn!("--id-label is not yet implemented; using workspace resolution");
+        }
+
+        let source = ctx.config_source();
+        let resolver = ConfigResolver::new(source).with_overrides(ctx.config_overrides());
+        let resolved = resolver.resolve()?;
+
+        let plan = LifecyclePlan::for_up(
+            &resolved,
+            LifecyclePlanOptions {
+                skip_post_create: Some("exec command requested".to_string()),
+                skip_post_attach: Some("exec command requested".to_string()),
+            },
+        );
+
+        let provider = ctx.provider();
+        let executor = LifecycleExecutor::new(provider);
+        let outcome = executor.execute(&resolved, &plan).await?;
+
+        let result = executor
+            .provider()
+            .exec(&outcome.container, &self.command)
+            .await?;
+
+        if !result.stdout.is_empty() {
+            print!("{}", result.stdout);
+        }
+        if !result.stderr.is_empty() {
+            eprint!("{}", result.stderr);
+        }
+
+        if result.exit_code != 0 {
+            return Err(DevcontainerError::Provider(format!(
+                "Command exited with status {}",
+                result.exit_code
+            )));
+        }
+
         Ok(())
     }
 }
@@ -259,6 +334,7 @@ struct CommandContext {
     project_root: PathBuf,
     workspace_folder: Option<PathBuf>,
     config_path: Option<PathBuf>,
+    docker_path: Option<PathBuf>,
 }
 
 impl CommandContext {
@@ -273,6 +349,7 @@ impl CommandContext {
             project_root,
             workspace_folder: cli.workspace_folder.clone(),
             config_path: cli.config.clone(),
+            docker_path: cli.docker_path.clone(),
         })
     }
 
@@ -295,69 +372,12 @@ impl CommandContext {
         }
         overrides
     }
-}
 
-struct NullProvider;
-
-#[async_trait]
-impl Provider for NullProvider {
-    fn kind(&self) -> ProviderKind {
-        ProviderKind::Mock
-    }
-
-    async fn prepare(&self, config: &ResolvedConfig) -> Result<ProviderPreparation> {
-        Ok(ProviderPreparation {
-            image: ProviderImage::Reference("mock:image".to_string()),
-            container_name: format!("mock-{}", config.project_name),
-            project_slug: config.project_name.clone(),
-            networks: Vec::new(),
-            volumes: Vec::new(),
-            workspace_mount_path: config.workspace_folder.clone(),
-        })
-    }
-
-    async fn ensure_networks(
-        &self,
-        _config: &ResolvedConfig,
-        _preparation: &ProviderPreparation,
-    ) -> Result<()> {
-        Ok(())
-    }
-
-    async fn ensure_volumes(
-        &self,
-        _config: &ResolvedConfig,
-        _preparation: &ProviderPreparation,
-    ) -> Result<()> {
-        Ok(())
-    }
-
-    async fn build_image(
-        &self,
-        _config: &ResolvedConfig,
-        preparation: &ProviderPreparation,
-    ) -> Result<String> {
-        Ok(preparation.image.reference().to_string())
-    }
-
-    async fn create_container(
-        &self,
-        _config: &ResolvedConfig,
-        preparation: &ProviderPreparation,
-        _image_reference: &str,
-    ) -> Result<RunningContainer> {
-        Ok(RunningContainer {
-            id: Some(format!("{}-id", preparation.container_name)),
-            name: Some(preparation.container_name.clone()),
-        })
-    }
-
-    async fn start_container(&self, _container: &RunningContainer) -> Result<()> {
-        Ok(())
-    }
-
-    async fn exec(&self, _container: &RunningContainer, _command: &[String]) -> Result<ExecResult> {
-        Ok(ExecResult::default())
+    fn provider(&self) -> DockerProvider {
+        match &self.docker_path {
+            Some(path) => DockerProvider::from_path(path.clone()),
+            None => DockerProvider::new(),
+        }
     }
 }
 
