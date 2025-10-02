@@ -21,7 +21,7 @@
 	// "forwardPorts": [],
 
 	// Use 'postCreateCommand' to run commands after the container is created.
-	"postCreateCommand": "cargo +nightly install --git https://github.com/openai/codex.git codex-cli"
+	"postCreateCommand": "cargo +nightly install --git https://github.com/openai/codex.git --rev rust-v0.43.0 codex-cli"
 
 	// Configure tool-specific properties.
 	// "customizations": {},
