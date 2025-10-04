@@ -8,7 +8,7 @@ async-trait = { workspace = true }
 devcontainer-core = { path = "../../core" }
 tokio = { workspace = true }
 tracing = { workspace = true }
-which = "5"
+which = "8"
 
 [dev-dependencies]
 tempfile = "3"
