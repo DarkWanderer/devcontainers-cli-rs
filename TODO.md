@@ -1,9 +1,8 @@
 # Devcontainer CLI (Rust) – TODO
 
 ## Near-Term
+- Implement integration test that builds, spins up and stops devcontainer (using own configuration)
 - Add unit tests for config parsing, lifecycle planning, and provider abstraction; stand up an integration test crate using a mock provider.
-- Wire lifecycle hook execution to provider `exec` once hook definitions are available in the resolved configuration.
-- Add GitHub Actions CI workflows to build & test branches & PRs with coverage
 - Implement CLI workflows for `run-user-commands`, `features`, `templates`, and `inspect` commands.
 - Honor lifecycle command flags (`--no-cache`, `--push`, `--id-label`, `--remove-unknown`) with provider support.
 

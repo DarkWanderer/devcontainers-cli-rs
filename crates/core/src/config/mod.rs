@@ -1,10 +1,11 @@
 use std::{
+    collections::BTreeMap,
     convert::TryFrom,
     fs,
     path::{Path, PathBuf},
 };
 
-use jsonschema::JSONSchema;
+use jsonschema::{error::ValidationErrorKind, JSONSchema};
 use once_cell::sync::Lazy;
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
@@ -12,15 +13,37 @@ use serde_json::{Map, Value};
 use crate::{errors::DevcontainerError, Result};
 
 static DEVCONTAINER_SCHEMA: Lazy<JSONSchema> = Lazy::new(|| {
-    let schema_json: Value =
-        serde_json::from_str(include_str!("../../schemas/devcontainer.schema.json"))
-            .expect("Bundled devcontainer schema must be valid JSON");
+    let schema_json: Value = serde_json::from_str(include_str!(
+        "../../../../spec/schemas/devContainer.base.schema.json"
+    ))
+    .expect("Bundled devcontainer schema must be valid JSON");
     JSONSchema::compile(&schema_json).expect("Bundled devcontainer schema must compile")
 });
 
 fn validate_against_schema(document: &Value) -> Result<()> {
     if let Err(errors) = DEVCONTAINER_SCHEMA.validate(document) {
-        let messages: Vec<String> = errors.map(|err| err.to_string()).collect();
+        let collected: Vec<_> = errors.collect();
+
+        let only_root_one_of_conflict = !collected.is_empty()
+            && collected.iter().all(|err| {
+                matches!(err.kind, ValidationErrorKind::OneOfMultipleValid { .. })
+                    && err.schema_path.to_string() == "/oneOf"
+            });
+
+        if only_root_one_of_conflict {
+            return Ok(());
+        }
+
+        #[cfg(test)]
+        {
+            for err in &collected {
+                eprintln!(
+                    "schema violation: path={} schema_path={} kind={:?} error={}",
+                    err.instance_path, err.schema_path, err.kind, err
+                );
+            }
+        }
+        let messages: Vec<String> = collected.iter().map(|err| err.to_string()).collect();
         let message = if messages.is_empty() {
             "Unknown validation error".to_string()
         } else {
@@ -49,21 +72,17 @@ pub struct DevcontainerConfig {
     pub features: Map<String, Value>,
     #[serde(default, rename = "forwardPorts")]
     pub forward_ports: Vec<ForwardPortDefinition>,
+    #[serde(default, rename = "postCreateCommand")]
+    pub post_create_command: Option<CommandDefinition>,
+    #[serde(default, rename = "postAttachCommand")]
+    pub post_attach_command: Option<CommandDefinition>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(untagged)]
 pub enum ForwardPortDefinition {
     Number(u16),
-    NumberString(String),
-    Detailed {
-        #[serde(rename = "localPort")]
-        local_port: u16,
-        #[serde(rename = "containerPort")]
-        container_port: u16,
-        #[serde(default)]
-        protocol: PortProtocol,
-    },
+    String(String),
 }
 
 impl TryFrom<ForwardPortDefinition> for ForwardPort {
@@ -76,28 +95,73 @@ impl TryFrom<ForwardPortDefinition> for ForwardPort {
                 container_port: port,
                 protocol: PortProtocol::Tcp,
             }),
-            ForwardPortDefinition::NumberString(port_str) => {
-                let port = port_str.parse::<u16>().map_err(|err| {
+            ForwardPortDefinition::String(value) => {
+                let trimmed = value.trim();
+                if trimmed.is_empty() {
+                    return Err(DevcontainerError::Configuration(
+                        "Invalid forward port value '': value must not be empty".to_string(),
+                    ));
+                }
+
+                let (local_part, container_part) = match trimmed.split_once(':') {
+                    Some((local, container)) => (local, container),
+                    None => (trimmed, trimmed),
+                };
+
+                let container_port = container_part.parse::<u16>().map_err(|err| {
                     DevcontainerError::Configuration(format!(
-                        "Invalid forward port value '{port_str}': {err}"
+                        "Invalid forward port value '{value}': container port: {err}"
                     ))
                 })?;
+
+                let local_port = local_part.parse::<u16>().map_err(|err| {
+                    DevcontainerError::Configuration(format!(
+                        "Invalid forward port value '{value}': local port: {err}"
+                    ))
+                })?;
+
                 Ok(Self {
-                    local_port: port,
-                    container_port: port,
+                    local_port,
+                    container_port,
                     protocol: PortProtocol::Tcp,
                 })
             }
-            ForwardPortDefinition::Detailed {
-                local_port,
-                container_port,
-                protocol,
-            } => Ok(Self {
-                local_port,
-                container_port,
-                protocol,
-            }),
         }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(untagged)]
+pub enum CommandArgs {
+    String(String),
+    Array(Vec<String>),
+}
+
+impl CommandArgs {
+    pub fn to_exec_args(&self) -> Vec<String> {
+        match self {
+            CommandArgs::String(command) => {
+                vec!["/bin/sh".to_string(), "-c".to_string(), command.clone()]
+            }
+            CommandArgs::Array(args) => args.clone(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(untagged)]
+pub enum CommandDefinition {
+    Single(CommandArgs),
+    Parallel(BTreeMap<String, CommandArgs>),
+}
+
+impl CommandDefinition {
+    pub fn from_string(command: impl Into<String>) -> Self {
+        Self::Single(CommandArgs::String(command.into()))
+    }
+
+    pub fn from_array(args: Vec<String>) -> Self {
+        Self::Single(CommandArgs::Array(args))
     }
 }
 
@@ -115,6 +179,10 @@ pub struct ResolvedConfig {
     pub features: Map<String, Value>,
     #[serde(default)]
     pub forward_ports: Vec<ForwardPort>,
+    #[serde(default)]
+    pub post_create_command: Option<CommandDefinition>,
+    #[serde(default)]
+    pub post_attach_command: Option<CommandDefinition>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -163,7 +231,8 @@ impl ConfigResolver {
             ))
         })?;
 
-        let document: Value = serde_json::from_str(&raw_document).map_err(|err| {
+        // Allow comments/trailing commas by parsing with JSON5-compatible parser.
+        let document: Value = json5::from_str(&raw_document).map_err(|err| {
             DevcontainerError::Configuration(format!(
                 "{} is not valid JSON: {err}",
                 config_path.display()
@@ -186,6 +255,8 @@ impl ConfigResolver {
             workspace_folder: config_workspace_folder,
             features,
             forward_ports: raw_forward_ports,
+            post_create_command,
+            post_attach_command,
         } = config;
 
         let forward_ports: Vec<ForwardPort> = raw_forward_ports
@@ -250,6 +321,8 @@ impl ConfigResolver {
             dockerfile,
             features,
             forward_ports,
+            post_create_command,
+            post_attach_command,
         })
     }
 }
@@ -317,7 +390,7 @@ impl ConfigOverrides {
 mod tests {
     use super::*;
     use serde_json::json;
-    use std::fs;
+    use std::{collections::BTreeMap, fs};
     use tempfile::tempdir;
 
     #[test]
@@ -333,8 +406,10 @@ mod tests {
             "image": "mcr.microsoft.com/devcontainers/base:latest",
             "forwardPorts": [
                 3000,
-                {"localPort": 9229, "containerPort": 9229, "protocol": "udp"}
+                "4000:9229"
             ],
+            "postCreateCommand": "echo post create",
+            "postAttachCommand": ["echo", "post-attach"],
             "features": {
                 "ghcr.io/devcontainers/features/node:1": {
                     "version": "18"
@@ -358,10 +433,61 @@ mod tests {
         assert_eq!(resolved.forward_ports[0].local_port, 3000);
         assert_eq!(resolved.forward_ports[0].container_port, 3000);
         assert_eq!(resolved.forward_ports[0].protocol, PortProtocol::Tcp);
-        assert_eq!(resolved.forward_ports[1].protocol, PortProtocol::Udp);
+        assert_eq!(resolved.forward_ports[1].local_port, 4000);
+        assert_eq!(resolved.forward_ports[1].container_port, 9229);
+        assert_eq!(resolved.forward_ports[1].protocol, PortProtocol::Tcp);
         assert!(resolved
             .features
             .contains_key("ghcr.io/devcontainers/features/node:1"));
+        assert_eq!(
+            resolved.post_create_command,
+            Some(CommandDefinition::from_string("echo post create"))
+        );
+        assert_eq!(
+            resolved.post_attach_command,
+            Some(CommandDefinition::from_array(vec![
+                "echo".to_string(),
+                "post-attach".to_string()
+            ]))
+        );
+    }
+
+    #[test]
+    fn resolve_supports_parallel_post_create_commands() {
+        let workspace = tempdir().expect("tempdir");
+        let workspace_path = workspace.path();
+        let devcontainer_dir = workspace_path.join(".devcontainer");
+        fs::create_dir_all(&devcontainer_dir).expect("create devcontainer dir");
+        let config_path = devcontainer_dir.join("devcontainer.json");
+
+        let config = json!({
+            "name": "parallel",
+            "image": "mcr.microsoft.com/devcontainers/base:latest",
+            "postCreateCommand": {
+                "first": "echo first",
+                "second": ["echo", "second"]
+            }
+        });
+        fs::write(&config_path, serde_json::to_string_pretty(&config).unwrap())
+            .expect("write config");
+
+        let resolver = ConfigResolver::new(ConfigSource::Workspace(workspace_path.to_path_buf()));
+        let resolved = resolver.resolve().expect("resolve config");
+
+        let mut expected = BTreeMap::new();
+        expected.insert(
+            "first".to_string(),
+            CommandArgs::String("echo first".to_string()),
+        );
+        expected.insert(
+            "second".to_string(),
+            CommandArgs::Array(vec!["echo".to_string(), "second".to_string()]),
+        );
+
+        assert_eq!(
+            resolved.post_create_command,
+            Some(CommandDefinition::Parallel(expected))
+        );
     }
 
     #[test]

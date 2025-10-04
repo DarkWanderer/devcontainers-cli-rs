@@ -1,1 +1,1 @@
-Continue implementing the specs. Pick one item to implement from TODO.md and implement it. If additional TODO items are discovered while implementing, add them to TODO.md. Refer to doc/spec if reference is needed.
+Continue implementing the specs. Pick one item to implement from TODO.md and implement it. If additional TODO items are discovered while implementing, add them to TODO.md. Refer to spec/*.md if reference is needed.

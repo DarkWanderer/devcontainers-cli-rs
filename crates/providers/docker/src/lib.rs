@@ -8,7 +8,7 @@ use devcontainer_core::{
     config::ResolvedConfig,
     provider::{
         ExecResult, Provider, ProviderBuildContext, ProviderCleanupOptions, ProviderImage,
-        ProviderKind, ProviderPreparation, RunningContainer, VolumeSpec,
+        ProviderKind, ProviderPreparation, RunningContainer,
     },
     DevcontainerError, Result,
 };
@@ -62,9 +62,6 @@ impl Provider for DockerProvider {
         let project_slug = sanitize_name(&config.project_name);
         let container_name = format!("devcontainer-{project_slug}");
         let workspace_mount_path = PathBuf::from(format!("/workspaces/{project_slug}"));
-        let network_name = format!("devcontainer-{project_slug}-network");
-        let volume_name = format!("devcontainer-{project_slug}-data");
-
         let image = if let Some(reference) = &config.image_reference {
             ProviderImage::Reference(reference.clone())
         } else if let Some(dockerfile) = &config.dockerfile {
@@ -95,11 +92,8 @@ impl Provider for DockerProvider {
             image,
             container_name,
             project_slug,
-            networks: vec![network_name],
-            volumes: vec![VolumeSpec {
-                name: volume_name,
-                mount_path: PathBuf::from("/workspaces/.devcontainer"),
-            }],
+            networks: Vec::new(),
+            volumes: Vec::new(),
             workspace_mount_path,
         })
     }
@@ -124,7 +118,8 @@ impl Provider for DockerProvider {
                 continue;
             }
 
-            if inspect.stderr.contains("No such network") {
+            let stderr_lower = inspect.stderr.to_ascii_lowercase();
+            if stderr_lower.contains("no such network") || stderr_lower.contains("not found") {
                 info!(network = %network, "Creating docker network");
                 cli.run_expect_success(vec![
                     "network".to_string(),
@@ -425,14 +420,19 @@ impl Provider for DockerProvider {
                 .await?;
             if output.status.success() {
                 info!(network = %network, "Removed docker network");
-            } else if output.stderr.contains("No such network") {
-                debug!(network = %network, "Docker network already absent");
-            } else {
-                return Err(DevcontainerError::Provider(format!(
-                    "Failed to remove docker network {network}: {}",
-                    output.stderr.trim()
-                )));
+                continue;
             }
+
+            let stderr_lower = output.stderr.to_ascii_lowercase();
+            if stderr_lower.contains("no such network") || stderr_lower.contains("not found") {
+                debug!(network = %network, "Docker network already absent");
+                continue;
+            }
+
+            return Err(DevcontainerError::Provider(format!(
+                "Failed to remove docker network {network}: {}",
+                output.stderr.trim()
+            )));
         }
 
         if options.remove_volumes {
@@ -650,6 +650,8 @@ mod tests {
             dockerfile: None,
             features: Default::default(),
             forward_ports: vec![],
+            post_create_command: None,
+            post_attach_command: None,
         };
 
         let preparation = provider.prepare(&config).await.unwrap();
@@ -659,11 +661,8 @@ mod tests {
             preparation.workspace_mount_path,
             PathBuf::from("/workspaces/sample-project")
         );
-        assert_eq!(
-            preparation.networks,
-            vec!["devcontainer-sample-project-network".to_string()]
-        );
-        assert_eq!(preparation.volumes.len(), 1);
+        assert!(preparation.networks.is_empty());
+        assert!(preparation.volumes.is_empty());
         assert!(matches!(preparation.image, ProviderImage::Reference(_)));
     }
 }
