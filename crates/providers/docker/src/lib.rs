@@ -8,7 +8,7 @@ use devcontainer_core::{
     config::ResolvedConfig,
     provider::{
         ExecResult, Provider, ProviderBuildContext, ProviderCleanupOptions, ProviderImage,
-        ProviderKind, ProviderPreparation, RunningContainer, VolumeSpec,
+        ProviderKind, ProviderPreparation, RunningContainer,
     },
     DevcontainerError, Result,
 };
@@ -62,8 +62,6 @@ impl Provider for DockerProvider {
         let project_slug = sanitize_name(&config.project_name);
         let container_name = format!("devcontainer-{project_slug}");
         let workspace_mount_path = PathBuf::from(format!("/workspaces/{project_slug}"));
-        let volume_name = format!("devcontainer-{project_slug}-data");
-
         let image = if let Some(reference) = &config.image_reference {
             ProviderImage::Reference(reference.clone())
         } else if let Some(dockerfile) = &config.dockerfile {
@@ -95,10 +93,7 @@ impl Provider for DockerProvider {
             container_name,
             project_slug,
             networks: Vec::new(),
-            volumes: vec![VolumeSpec {
-                name: volume_name,
-                mount_path: PathBuf::from("/workspaces/.devcontainer"),
-            }],
+            volumes: Vec::new(),
             workspace_mount_path,
         })
     }
@@ -667,7 +662,7 @@ mod tests {
             PathBuf::from("/workspaces/sample-project")
         );
         assert!(preparation.networks.is_empty());
-        assert_eq!(preparation.volumes.len(), 1);
+        assert!(preparation.volumes.is_empty());
         assert!(matches!(preparation.image, ProviderImage::Reference(_)));
     }
 }
