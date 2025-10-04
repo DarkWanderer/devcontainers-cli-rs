@@ -1,4 +1,5 @@
 use std::{
+    collections::BTreeMap,
     convert::TryFrom,
     fs,
     path::{Path, PathBuf},
@@ -131,19 +132,36 @@ impl TryFrom<ForwardPortDefinition> for ForwardPort {
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(untagged)]
-pub enum CommandDefinition {
+pub enum CommandArgs {
     String(String),
     Array(Vec<String>),
 }
 
-impl CommandDefinition {
+impl CommandArgs {
     pub fn to_exec_args(&self) -> Vec<String> {
         match self {
-            CommandDefinition::String(command) => {
+            CommandArgs::String(command) => {
                 vec!["/bin/sh".to_string(), "-c".to_string(), command.clone()]
             }
-            CommandDefinition::Array(args) => args.clone(),
+            CommandArgs::Array(args) => args.clone(),
         }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(untagged)]
+pub enum CommandDefinition {
+    Single(CommandArgs),
+    Parallel(BTreeMap<String, CommandArgs>),
+}
+
+impl CommandDefinition {
+    pub fn from_string(command: impl Into<String>) -> Self {
+        Self::Single(CommandArgs::String(command.into()))
+    }
+
+    pub fn from_array(args: Vec<String>) -> Self {
+        Self::Single(CommandArgs::Array(args))
     }
 }
 
@@ -213,7 +231,8 @@ impl ConfigResolver {
             ))
         })?;
 
-        let document: Value = serde_json::from_str(&raw_document).map_err(|err| {
+        // Allow comments/trailing commas by parsing with JSON5-compatible parser.
+        let document: Value = json5::from_str(&raw_document).map_err(|err| {
             DevcontainerError::Configuration(format!(
                 "{} is not valid JSON: {err}",
                 config_path.display()
@@ -371,7 +390,7 @@ impl ConfigOverrides {
 mod tests {
     use super::*;
     use serde_json::json;
-    use std::fs;
+    use std::{collections::BTreeMap, fs};
     use tempfile::tempdir;
 
     #[test]
@@ -422,14 +441,52 @@ mod tests {
             .contains_key("ghcr.io/devcontainers/features/node:1"));
         assert_eq!(
             resolved.post_create_command,
-            Some(CommandDefinition::String("echo post create".to_string()))
+            Some(CommandDefinition::from_string("echo post create"))
         );
         assert_eq!(
             resolved.post_attach_command,
-            Some(CommandDefinition::Array(vec![
+            Some(CommandDefinition::from_array(vec![
                 "echo".to_string(),
                 "post-attach".to_string()
             ]))
+        );
+    }
+
+    #[test]
+    fn resolve_supports_parallel_post_create_commands() {
+        let workspace = tempdir().expect("tempdir");
+        let workspace_path = workspace.path();
+        let devcontainer_dir = workspace_path.join(".devcontainer");
+        fs::create_dir_all(&devcontainer_dir).expect("create devcontainer dir");
+        let config_path = devcontainer_dir.join("devcontainer.json");
+
+        let config = json!({
+            "name": "parallel",
+            "image": "mcr.microsoft.com/devcontainers/base:latest",
+            "postCreateCommand": {
+                "first": "echo first",
+                "second": ["echo", "second"]
+            }
+        });
+        fs::write(&config_path, serde_json::to_string_pretty(&config).unwrap())
+            .expect("write config");
+
+        let resolver = ConfigResolver::new(ConfigSource::Workspace(workspace_path.to_path_buf()));
+        let resolved = resolver.resolve().expect("resolve config");
+
+        let mut expected = BTreeMap::new();
+        expected.insert(
+            "first".to_string(),
+            CommandArgs::String("echo first".to_string()),
+        );
+        expected.insert(
+            "second".to_string(),
+            CommandArgs::Array(vec!["echo".to_string(), "second".to_string()]),
+        );
+
+        assert_eq!(
+            resolved.post_create_command,
+            Some(CommandDefinition::Parallel(expected))
         );
     }
 

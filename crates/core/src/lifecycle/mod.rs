@@ -1,7 +1,7 @@
 use std::{fmt::Display, path::PathBuf};
 
 use crate::{
-    config::{CommandDefinition, ResolvedConfig},
+    config::{CommandArgs, CommandDefinition, ResolvedConfig},
     provider::{Provider, RunningContainer},
     DevcontainerError, Result,
 };
@@ -458,27 +458,97 @@ impl<P: Provider> LifecycleExecutor<P> {
         hook: LifecycleHook,
         command: &CommandDefinition,
     ) -> Result<()> {
+        match command {
+            CommandDefinition::Single(cmd) => {
+                self.run_hook_command(container, hook, None, cmd).await
+            }
+            CommandDefinition::Parallel(commands) => {
+                for (name, cmd) in commands {
+                    self.run_hook_command(container, hook, Some(name.as_str()), cmd)
+                        .await?;
+                }
+                Ok(())
+            }
+        }
+    }
+
+    async fn run_hook_command(
+        &self,
+        container: &RunningContainer,
+        hook: LifecycleHook,
+        command_name: Option<&str>,
+        command: &CommandArgs,
+    ) -> Result<()> {
         let args = command.to_exec_args();
-        tracing::debug!(hook = %hook, command = ?args, "Executing lifecycle hook command");
+        if let Some(name) = command_name {
+            tracing::debug!(
+                hook = %hook,
+                command_name = name,
+                command = ?args,
+                "Executing lifecycle hook command"
+            );
+        } else {
+            tracing::debug!(hook = %hook, command = ?args, "Executing lifecycle hook command");
+        }
 
         let result = self.provider.exec(container, &args).await?;
-        tracing::debug!(hook = %hook, exit_code = result.exit_code, "Lifecycle hook completed");
+        if let Some(name) = command_name {
+            tracing::debug!(
+                hook = %hook,
+                command_name = name,
+                exit_code = result.exit_code,
+                "Lifecycle hook completed"
+            );
+        } else {
+            tracing::debug!(
+                hook = %hook,
+                exit_code = result.exit_code,
+                "Lifecycle hook completed"
+            );
+        }
 
         let stdout = result.stdout.trim();
         if !stdout.is_empty() {
-            tracing::info!(hook = %hook, stdout = %stdout, "Lifecycle hook stdout");
+            if let Some(name) = command_name {
+                tracing::info!(
+                    hook = %hook,
+                    command_name = name,
+                    stdout = %stdout,
+                    "Lifecycle hook stdout"
+                );
+            } else {
+                tracing::info!(hook = %hook, stdout = %stdout, "Lifecycle hook stdout");
+            }
         }
 
         let stderr = result.stderr.trim();
         if !stderr.is_empty() {
-            tracing::warn!(hook = %hook, stderr = %stderr, "Lifecycle hook stderr");
+            if let Some(name) = command_name {
+                tracing::warn!(
+                    hook = %hook,
+                    command_name = name,
+                    stderr = %stderr,
+                    "Lifecycle hook stderr"
+                );
+            } else {
+                tracing::warn!(hook = %hook, stderr = %stderr, "Lifecycle hook stderr");
+            }
         }
 
         if result.exit_code != 0 {
-            let mut message = format!("{hook} command failed with exit code {}", result.exit_code);
+            let mut message = if let Some(name) = command_name {
+                format!(
+                    "{hook} command '{name}' failed with exit code {}",
+                    result.exit_code
+                )
+            } else {
+                format!("{hook} command failed with exit code {}", result.exit_code)
+            };
+
             if !stderr.is_empty() {
                 message.push_str(&format!(" ({stderr})"));
             }
+
             return Err(DevcontainerError::Provider(message));
         }
 
@@ -505,8 +575,8 @@ mod tests {
             dockerfile: None,
             features: Default::default(),
             forward_ports: vec![],
-            post_create_command: Some(CommandDefinition::String("echo post create".to_string())),
-            post_attach_command: Some(CommandDefinition::Array(vec![
+            post_create_command: Some(CommandDefinition::from_string("echo post create")),
+            post_attach_command: Some(CommandDefinition::from_array(vec![
                 "echo".to_string(),
                 "post-attach".to_string(),
             ])),
