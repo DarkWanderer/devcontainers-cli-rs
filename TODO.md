@@ -1,7 +1,6 @@
 # Devcontainer CLI (Rust) – TODO
 
 ## Near-Term
-- Add GitHub Actions CI workflows to build & test branches & PRs with coverage
 - Implement integration test that builds, spins up and stops devcontainer (using own configuration)
 - Add unit tests for config parsing, lifecycle planning, and provider abstraction; stand up an integration test crate using a mock provider.
 - Implement CLI workflows for `run-user-commands`, `features`, `templates`, and `inspect` commands.
