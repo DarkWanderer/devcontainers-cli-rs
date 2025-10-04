@@ -12,7 +12,6 @@ use devcontainer_core::{
     },
     DevcontainerError, Result,
 };
-use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::process::Command;
 use tracing::{debug, info, warn};
 
@@ -332,7 +331,7 @@ impl Provider for DockerProvider {
         args.push(identifier.clone());
         args.extend(command.iter().cloned());
 
-        let output = cli.run_with_forwarding(args).await?;
+        let output = cli.run(args).await?;
         let exit_code = output.status.code().unwrap_or(-1);
 
         Ok(ExecResult {
@@ -530,71 +529,6 @@ impl DockerCli {
             output.stdout,
             output.stderr,
         ))
-    }
-
-    async fn run_with_forwarding(&self, args: Vec<String>) -> Result<CommandOutput> {
-        let command_line = format_command(&self.program, &args);
-
-        let mut command = Command::new(&self.program);
-        command.args(&args);
-        command.stdin(Stdio::null());
-        command.stdout(Stdio::piped());
-        command.stderr(Stdio::piped());
-
-        let mut child = command.spawn().map_err(|err| {
-            DevcontainerError::Provider(format!("Failed to spawn '{}': {err}", command_line))
-        })?;
-
-        let stdout = child.stdout.take();
-        let stderr = child.stderr.take();
-
-        let stdout_future = async move {
-            let mut data = Vec::new();
-            if let Some(mut stdout) = stdout {
-                let mut buf = [0u8; 1024];
-                let mut writer = tokio::io::stdout();
-                loop {
-                    let read = stdout.read(&mut buf).await?;
-                    if read == 0 {
-                        break;
-                    }
-                    writer.write_all(&buf[..read]).await?;
-                    writer.flush().await?;
-                    data.extend_from_slice(&buf[..read]);
-                }
-            }
-            Ok::<Vec<u8>, std::io::Error>(data)
-        };
-
-        let stderr_future = async move {
-            let mut data = Vec::new();
-            if let Some(mut stderr) = stderr {
-                let mut buf = [0u8; 1024];
-                let mut writer = tokio::io::stderr();
-                loop {
-                    let read = stderr.read(&mut buf).await?;
-                    if read == 0 {
-                        break;
-                    }
-                    writer.write_all(&buf[..read]).await?;
-                    writer.flush().await?;
-                    data.extend_from_slice(&buf[..read]);
-                }
-            }
-            Ok::<Vec<u8>, std::io::Error>(data)
-        };
-
-        let wait_future = async move {
-            let status = child.wait().await?;
-            Ok::<ExitStatus, std::io::Error>(status)
-        };
-
-        let (stdout, stderr, status) = tokio::try_join!(stdout_future, stderr_future, wait_future)
-            .map_err(|err| {
-                DevcontainerError::Provider(format!("Failed to execute '{}': {err}", command_line))
-            })?;
-
-        Ok(CommandOutput::new(command_line, status, stdout, stderr))
     }
 
     async fn run_expect_success(&self, args: Vec<String>) -> Result<CommandOutput> {
