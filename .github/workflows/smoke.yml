@@ -38,10 +38,6 @@ jobs:
       - name: Bring up devcontainer
         run: cargo run -p devcontainer-cli -- up --skip-post-create --skip-post-attach
 
-      - name: Tear down devcontainer after up
-        if: always()
-        run: cargo run -p devcontainer-cli -- down --remove-volumes --remove-unknown
-
       - name: Execute dummy command in devcontainer
         run: cargo run -p devcontainer-cli -- exec -- echo "hello from devcontainer"
 
