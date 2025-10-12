@@ -61,7 +61,10 @@ impl Provider for DockerProvider {
 
         let project_slug = sanitize_name(&config.project_name);
         let container_name = format!("devcontainer-{project_slug}");
-        let workspace_mount_path = PathBuf::from(format!("/workspaces/{project_slug}"));
+        let workspace_mount_path = config
+            .container_workspace_folder
+            .clone()
+            .unwrap_or_else(|| PathBuf::from(format!("/workspaces/{project_slug}")));
         let image = if let Some(reference) = &config.image_reference {
             ProviderImage::Reference(reference.clone())
         } else if let Some(dockerfile) = &config.dockerfile {
@@ -645,6 +648,7 @@ mod tests {
         let config = ResolvedConfig {
             project_name: "Sample Project".into(),
             workspace_folder: workspace,
+            container_workspace_folder: None,
             config_path,
             image_reference: Some("ghcr.io/devcontainers/base:latest".into()),
             dockerfile: None,
@@ -664,5 +668,34 @@ mod tests {
         assert!(preparation.networks.is_empty());
         assert!(preparation.volumes.is_empty());
         assert!(matches!(preparation.image, ProviderImage::Reference(_)));
+    }
+
+    #[tokio::test]
+    async fn prepare_respects_container_workspace_folder_from_config() {
+        let temp = tempdir().expect("temp workspace");
+        let workspace = temp.path().join("workspace");
+        fs::create_dir_all(&workspace).expect("workspace directory");
+        let config_path = temp.path().join("devcontainer.json");
+        fs::write(&config_path, "{}").expect("write config stub");
+
+        let provider = DockerProvider::from_path("/bin/echo");
+        let config = ResolvedConfig {
+            project_name: "Sample Project".into(),
+            workspace_folder: workspace,
+            container_workspace_folder: Some(PathBuf::from("/workspace/demo")),
+            config_path,
+            image_reference: Some("ghcr.io/devcontainers/base:latest".into()),
+            dockerfile: None,
+            features: Default::default(),
+            forward_ports: vec![],
+            post_create_command: None,
+            post_attach_command: None,
+        };
+
+        let preparation = provider.prepare(&config).await.unwrap();
+        assert_eq!(
+            preparation.workspace_mount_path,
+            PathBuf::from("/workspace/demo")
+        );
     }
 }
