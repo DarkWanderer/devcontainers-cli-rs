@@ -57,6 +57,24 @@ fn validate_against_schema(document: &Value) -> Result<()> {
     Ok(())
 }
 
+fn resolve_local_workspace_placeholders(input: &str, workspace_root: &Path) -> String {
+    let mut result = input.to_string();
+
+    if result.contains("${localWorkspaceFolderBasename}") {
+        if let Some(name) = workspace_root.file_name() {
+            let name = name.to_string_lossy();
+            result = result.replace("${localWorkspaceFolderBasename}", &name);
+        }
+    }
+
+    if result.contains("${localWorkspaceFolder}") {
+        let replacement = workspace_root.to_string_lossy();
+        result = result.replace("${localWorkspaceFolder}", &replacement);
+    }
+
+    result
+}
+
 /// Raw devcontainer configuration as read from `devcontainer.json`.
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct DevcontainerConfig {
@@ -170,6 +188,8 @@ impl CommandDefinition {
 pub struct ResolvedConfig {
     pub project_name: String,
     pub workspace_folder: PathBuf,
+    #[serde(default)]
+    pub container_workspace_folder: Option<PathBuf>,
     pub config_path: PathBuf,
     #[serde(default)]
     pub image_reference: Option<String>,
@@ -283,21 +303,34 @@ impl ConfigResolver {
             ConfigSource::ExplicitFile(_) => config_dir.clone(),
         };
 
-        let config_workspace_folder = config_workspace_folder.map(|folder| {
-            let path = PathBuf::from(folder);
-            if path.is_absolute() {
-                path
+        let workspace_folder_override = self.overrides.workspace_folder.clone();
+
+        let workspace_folder_from_config = config_workspace_folder.as_ref().and_then(|folder| {
+            if folder.trim_start().starts_with('/') {
+                return None;
+            }
+
+            let substituted = resolve_local_workspace_placeholders(folder, &workspace_root);
+            let path = PathBuf::from(&substituted);
+            if Path::new(&substituted).is_absolute() {
+                Some(path)
             } else {
-                workspace_root.join(path)
+                Some(workspace_root.join(path))
             }
         });
 
-        let workspace_folder = self
-            .overrides
-            .workspace_folder
-            .clone()
-            .or(config_workspace_folder)
+        let workspace_folder = workspace_folder_override
+            .or(workspace_folder_from_config)
             .unwrap_or_else(|| workspace_root.clone());
+
+        let container_workspace_folder = config_workspace_folder.as_ref().and_then(|folder| {
+            if folder.trim_start().starts_with('/') {
+                let substituted = resolve_local_workspace_placeholders(folder, &workspace_root);
+                Some(PathBuf::from(substituted))
+            } else {
+                None
+            }
+        });
 
         let project_name = self
             .overrides
@@ -316,6 +349,7 @@ impl ConfigResolver {
         Ok(ResolvedConfig {
             project_name,
             workspace_folder,
+            container_workspace_folder,
             config_path,
             image_reference,
             dockerfile,
@@ -424,6 +458,7 @@ mod tests {
 
         assert_eq!(resolved.project_name, "sample");
         assert_eq!(resolved.workspace_folder, workspace_path.to_path_buf());
+        assert!(resolved.container_workspace_folder.is_none());
         assert_eq!(resolved.config_path, config_path);
         assert_eq!(
             resolved.image_reference.as_deref(),
@@ -516,7 +551,39 @@ mod tests {
             resolved.workspace_folder,
             workspace_path.join("nested/project")
         );
+        assert!(resolved.container_workspace_folder.is_none());
         assert!(resolved.dockerfile.is_none());
+    }
+
+    #[test]
+    fn workspace_folder_placeholders_are_resolved_for_container_paths() {
+        let workspace = tempdir().expect("tempdir");
+        let workspace_path = workspace.path();
+        let workspace_basename = workspace_path
+            .file_name()
+            .map(|name| name.to_string_lossy().into_owned())
+            .expect("workspace basename");
+        let devcontainer_dir = workspace_path.join(".devcontainer");
+        fs::create_dir_all(&devcontainer_dir).expect("create devcontainer dir");
+        let config_path = devcontainer_dir.join("devcontainer.json");
+
+        let config = json!({
+            "name": "placeholders",
+            "workspaceFolder": "/workspace/${localWorkspaceFolderBasename}",
+            "forwardPorts": []
+        });
+        fs::write(&config_path, serde_json::to_string_pretty(&config).unwrap())
+            .expect("write config");
+
+        let resolver = ConfigResolver::new(ConfigSource::Workspace(workspace_path.to_path_buf()));
+        let resolved = resolver.resolve().expect("resolve config");
+
+        assert_eq!(resolved.project_name, "placeholders");
+        assert_eq!(resolved.workspace_folder, workspace_path.to_path_buf());
+        assert_eq!(
+            resolved.container_workspace_folder,
+            Some(PathBuf::from(format!("/workspace/{workspace_basename}")))
+        );
     }
 
     #[test]

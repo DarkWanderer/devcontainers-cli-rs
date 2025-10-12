@@ -570,6 +570,7 @@ mod tests {
         ResolvedConfig {
             project_name: "demo".to_string(),
             workspace_folder: PathBuf::from("/workspace"),
+            container_workspace_folder: Some(PathBuf::from("/workspace")),
             config_path: PathBuf::from("/workspace/.devcontainer/devcontainer.json"),
             image_reference: Some("example:image".to_string()),
             dockerfile: None,
