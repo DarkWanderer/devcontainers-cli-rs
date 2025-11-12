@@ -1,0 +1,9 @@
+{
+  "name": "Multi-stage Dockerfile Test",
+  "build": {
+    "dockerfile": "Dockerfile",
+    "context": ".",
+    "target": "development"
+  },
+  "postCreateCommand": "test -f /app/built.txt && echo 'Multi-stage build successful'"
+}

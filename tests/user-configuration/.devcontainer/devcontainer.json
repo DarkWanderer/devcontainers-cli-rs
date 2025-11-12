@@ -1,0 +1,9 @@
+{
+  "name": "User Configuration Test",
+  "image": "mcr.microsoft.com/devcontainers/base:ubuntu",
+  "containerUser": "vscode",
+  "remoteUser": "vscode",
+  "updateRemoteUserUID": true,
+  "userEnvProbe": "loginInteractiveShell",
+  "postCreateCommand": "whoami > /tmp/user.txt && id >> /tmp/user.txt"
+}

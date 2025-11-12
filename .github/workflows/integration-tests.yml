@@ -1,0 +1,214 @@
+name: Integration Tests
+
+on:
+  push:
+    branches: [ main, develop, 'claude/**' ]
+  pull_request:
+    branches: [ main, develop ]
+  workflow_dispatch:
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  discover-tests:
+    name: Discover Test Cases
+    runs-on: ubuntu-latest
+    outputs:
+      test-dirs: ${{ steps.discover.outputs.test-dirs }}
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Discover test directories
+        id: discover
+        run: |
+          # Find all directories in tests/ that contain a .devcontainer directory
+          test_dirs=$(find tests -mindepth 1 -maxdepth 1 -type d | sort | jq -R -s -c 'split("\n")[:-1]')
+          echo "test-dirs=${test_dirs}" >> $GITHUB_OUTPUT
+          echo "Found test directories:"
+          echo "${test_dirs}" | jq -r '.[]'
+
+  integration-test:
+    name: Test - ${{ matrix.test-dir }}
+    needs: discover-tests
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        test-dir: ${{ fromJson(needs.discover-tests.outputs.test-dirs) }}
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: stable
+
+      - name: Cache cargo registry
+        uses: actions/cache@v4
+        with:
+          path: ~/.cargo/registry
+          key: ${{ runner.os }}-cargo-registry-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-registry-
+
+      - name: Cache cargo index
+        uses: actions/cache@v4
+        with:
+          path: ~/.cargo/git
+          key: ${{ runner.os }}-cargo-git-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-git-
+
+      - name: Cache cargo build
+        uses: actions/cache@v4
+        with:
+          path: target
+          key: ${{ runner.os }}-cargo-build-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-build-
+
+      - name: Build devcontainer CLI
+        run: cargo build --release
+
+      - name: Add CLI to PATH
+        run: |
+          echo "${GITHUB_WORKSPACE}/target/release" >> $GITHUB_PATH
+
+      - name: Verify CLI is available
+        run: |
+          devcontainer --version
+
+      - name: Test case - ${{ matrix.test-dir }}
+        id: test
+        working-directory: ${{ matrix.test-dir }}
+        run: |
+          echo "::group::Running test for ${{ matrix.test-dir }}"
+
+          # Set test name
+          TEST_NAME=$(basename "${{ matrix.test-dir }}")
+          echo "Test: ${TEST_NAME}"
+
+          # Check if devcontainer.json exists
+          if [ ! -f ".devcontainer/devcontainer.json" ]; then
+            echo "❌ No .devcontainer/devcontainer.json found"
+            exit 1
+          fi
+
+          echo "✓ Found devcontainer.json"
+
+          # Display configuration
+          echo "Configuration:"
+          cat .devcontainer/devcontainer.json | jq '.' || cat .devcontainer/devcontainer.json
+
+          echo "::endgroup::"
+
+      - name: Run devcontainer up
+        id: up
+        working-directory: ${{ matrix.test-dir }}
+        timeout-minutes: 10
+        run: |
+          echo "::group::Starting devcontainer"
+          devcontainer up --workspace-folder .
+          EXIT_CODE=$?
+          if [ $EXIT_CODE -ne 0 ]; then
+            echo "❌ devcontainer up failed with exit code $EXIT_CODE"
+            exit $EXIT_CODE
+          fi
+          echo "✓ Container started successfully"
+          echo "::endgroup::"
+
+      - name: Run devcontainer exec
+        id: exec
+        working-directory: ${{ matrix.test-dir }}
+        timeout-minutes: 5
+        run: |
+          echo "::group::Testing container execution"
+
+          # Test basic command execution
+          devcontainer exec --workspace-folder . echo "Hello from devcontainer"
+          EXIT_CODE=$?
+          if [ $EXIT_CODE -ne 0 ]; then
+            echo "❌ devcontainer exec failed with exit code $EXIT_CODE"
+            exit $EXIT_CODE
+          fi
+
+          # Test that we can run commands
+          devcontainer exec --workspace-folder . pwd
+          devcontainer exec --workspace-folder . whoami
+          devcontainer exec --workspace-folder . env | head -20
+
+          echo "✓ Command execution successful"
+          echo "::endgroup::"
+
+      - name: Verify test-specific requirements
+        id: verify
+        working-directory: ${{ matrix.test-dir }}
+        timeout-minutes: 5
+        continue-on-error: true
+        run: |
+          echo "::group::Verifying test-specific requirements"
+
+          TEST_NAME=$(basename "${{ matrix.test-dir }}")
+
+          case "$TEST_NAME" in
+            "lifecycle-commands")
+              echo "Checking lifecycle command outputs..."
+              devcontainer exec --workspace-folder . test -f /tmp/postcreate.txt && echo "✓ postCreateCommand executed" || echo "⚠ postCreateCommand file not found"
+              ;;
+            "environment-variables")
+              echo "Checking environment variables..."
+              devcontainer exec --workspace-folder . env | grep CONTAINER_VAR && echo "✓ Container env set" || echo "⚠ Container env not found"
+              ;;
+            "dockerfile-build")
+              echo "Checking Dockerfile build..."
+              devcontainer exec --workspace-folder . which git && echo "✓ Git installed" || echo "⚠ Git not found"
+              devcontainer exec --workspace-folder . which curl && echo "✓ Curl installed" || echo "⚠ Curl not found"
+              ;;
+            "user-configuration")
+              echo "Checking user configuration..."
+              devcontainer exec --workspace-folder . whoami
+              ;;
+            *)
+              echo "No specific verification for $TEST_NAME"
+              ;;
+          esac
+
+          echo "::endgroup::"
+
+      - name: Cleanup - devcontainer down
+        if: always()
+        working-directory: ${{ matrix.test-dir }}
+        timeout-minutes: 5
+        run: |
+          echo "::group::Cleaning up devcontainer"
+          devcontainer down --workspace-folder . || true
+          echo "✓ Cleanup completed"
+          echo "::endgroup::"
+
+      - name: Cleanup - Docker system prune
+        if: always()
+        run: |
+          echo "::group::Docker cleanup"
+          docker ps -a
+          docker system prune -f --volumes || true
+          echo "::endgroup::"
+
+  summary:
+    name: Test Summary
+    needs: integration-test
+    runs-on: ubuntu-latest
+    if: always()
+    steps:
+      - name: Check test results
+        run: |
+          echo "Integration tests completed"
+          if [ "${{ needs.integration-test.result }}" == "success" ]; then
+            echo "✅ All integration tests passed"
+          else
+            echo "❌ Some integration tests failed"
+            exit 1
+          fi
