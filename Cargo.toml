@@ -25,3 +25,17 @@ tokio = { version = "1", features = ["rt-multi-thread", "macros", "process", "io
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["fmt", "env-filter", "json"] }
 json5 = "0.4"
+
+[workspace.metadata.coverage.report]
+# Configuration for cargo-llvm-cov
+[workspace.metadata.coverage]
+# Exclude files from coverage
+exclude-files = [
+    "target/*",
+    "tests/*",
+]
+
+# Default output formats
+[workspace.metadata.llvm-cov]
+html = true
+lcov = true
