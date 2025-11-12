@@ -1,0 +1,8 @@
+{
+  "name": "Docker Compose Test",
+  "dockerComposeFile": "docker-compose.yml",
+  "service": "app",
+  "workspaceFolder": "/workspace",
+  "shutdownAction": "stopCompose",
+  "postCreateCommand": "echo 'Compose environment ready'"
+}

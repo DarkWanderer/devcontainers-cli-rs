@@ -1,0 +1,25 @@
+{
+  "name": "Port Forwarding Test",
+  "image": "alpine:3.19",
+  "forwardPorts": [3000, 8080, 9000],
+  "portsAttributes": {
+    "3000": {
+      "label": "Application",
+      "protocol": "http",
+      "onAutoForward": "notify"
+    },
+    "8080": {
+      "label": "API Server",
+      "protocol": "https",
+      "onAutoForward": "openBrowser"
+    },
+    "9000": {
+      "label": "Debug Port",
+      "onAutoForward": "silent"
+    }
+  },
+  "otherPortsAttributes": {
+    "onAutoForward": "ignore"
+  },
+  "appPort": [3000, 8080]
+}

@@ -1,0 +1,16 @@
+{
+  "name": "Environment Variables Test",
+  "image": "alpine:3.19",
+  "containerEnv": {
+    "CONTAINER_VAR": "container_value",
+    "SHARED_VAR": "from_container",
+    "PATH": "${containerEnv:PATH}:/custom/bin"
+  },
+  "remoteEnv": {
+    "REMOTE_VAR": "remote_value",
+    "WORKSPACE": "${containerWorkspaceFolder}",
+    "WORKSPACE_BASENAME": "${localWorkspaceFolderBasename}",
+    "LOCAL_WORKSPACE": "${localWorkspaceFolder}"
+  },
+  "postCreateCommand": "env | grep -E '(CONTAINER_VAR|REMOTE_VAR|WORKSPACE)' | sort"
+}

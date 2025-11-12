@@ -1,0 +1,22 @@
+{
+  "name": "Mounts Test",
+  "image": "alpine:3.19",
+  "mounts": [
+    {
+      "type": "bind",
+      "source": "${localWorkspaceFolder}/data",
+      "target": "/workspace/data"
+    },
+    {
+      "type": "volume",
+      "source": "devcontainer-cache",
+      "target": "/cache"
+    },
+    {
+      "type": "bind",
+      "source": "${localEnv:HOME}/.gitconfig",
+      "target": "/home/vscode/.gitconfig"
+    }
+  ],
+  "postCreateCommand": "mkdir -p /workspace/data /cache && echo 'Mounts configured' > /cache/test.txt"
+}

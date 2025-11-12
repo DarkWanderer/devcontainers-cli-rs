@@ -1,0 +1,14 @@
+{
+  "name": "Privileged Mode Test",
+  "image": "alpine:3.19",
+  "privileged": true,
+  "init": true,
+  "capAdd": [
+    "SYS_PTRACE",
+    "NET_ADMIN"
+  ],
+  "securityOpt": [
+    "seccomp=unconfined"
+  ],
+  "postCreateCommand": "cat /proc/1/status | grep -i cap > /tmp/capabilities.txt"
+}
