@@ -75,12 +75,18 @@ struct UpArgs {
     skip_post_create: bool,
     #[arg(long = "skip-post-attach")]
     skip_post_attach: bool,
+    #[arg(long, help = "Enable hardened mode: disable all mounts (except workspace), capabilities, and privileges")]
+    hardened: bool,
 }
 
 impl UpArgs {
     async fn run(&self, ctx: &CommandContext) -> Result<()> {
         let source = ctx.config_source();
-        let resolver = ConfigResolver::new(source).with_overrides(ctx.config_overrides());
+        let mut overrides = ctx.config_overrides();
+        if self.hardened {
+            overrides.hardened = true;
+        }
+        let resolver = ConfigResolver::new(source).with_overrides(overrides);
         let resolved = resolver.resolve()?;
 
         let plan = LifecyclePlan::for_up(
