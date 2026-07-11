@@ -15,7 +15,7 @@ jobs:
     name: Test
     runs-on: ubuntu-latest
     container:
-      image: elquentaro/devcontainer:latest@sha256:710eb1701f02622eb73603e3241fad861f338db9ddb35a4e91df2fe7dd58e66e
+      image: elquentaro/devcontainer:latest@sha256:73ecd8d2d4f999176685d18723d1114d8e951af3f17b1ecdbef296b8dc18487a
     steps:
       - name: Checkout repository
         uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8 # v5
