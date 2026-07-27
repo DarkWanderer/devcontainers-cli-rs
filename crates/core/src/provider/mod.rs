@@ -54,6 +54,7 @@ pub struct ProviderPreparation {
     pub networks: Vec<String>,
     pub volumes: Vec<VolumeSpec>,
     pub workspace_mount_path: PathBuf,
+    pub hardened: bool,
 }
 
 #[derive(Debug, Clone, Default)]

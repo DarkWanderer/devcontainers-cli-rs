@@ -98,6 +98,7 @@ impl Provider for DockerProvider {
             networks: Vec::new(),
             volumes: Vec::new(),
             workspace_mount_path,
+            hardened: config.hardened,
         })
     }
 
@@ -282,13 +283,34 @@ impl Provider for DockerProvider {
         args.push("--workdir".to_string());
         args.push(workspace_dst.clone());
 
+        // Workspace mount configuration
         args.push("--mount".to_string());
-        args.push(format!("type=bind,src={workspace_src},dst={workspace_dst}"));
+        if preparation.hardened {
+            // In hardened mode, mount workspace as read-only
+            args.push(format!("type=bind,src={workspace_src},dst={workspace_dst},readonly"));
+        } else {
+            args.push(format!("type=bind,src={workspace_src},dst={workspace_dst}"));
+        }
 
-        for volume in &preparation.volumes {
-            let mount_path = path_to_string(&volume.mount_path)?;
-            args.push("--mount".to_string());
-            args.push(format!("type=volume,src={},dst={mount_path}", volume.name));
+        // In hardened mode, skip additional volume mounts
+        if !preparation.hardened {
+            for volume in &preparation.volumes {
+                let mount_path = path_to_string(&volume.mount_path)?;
+                args.push("--mount".to_string());
+                args.push(format!("type=volume,src={},dst={mount_path}", volume.name));
+            }
+        }
+
+        // Hardening: drop all capabilities
+        if preparation.hardened {
+            args.push("--cap-drop".to_string());
+            args.push("ALL".to_string());
+        }
+
+        // Hardening: add security options to prevent privilege escalation
+        if preparation.hardened {
+            args.push("--security-opt".to_string());
+            args.push("no-new-privileges:true".to_string());
         }
 
         args.push(image_reference.to_string());
@@ -656,6 +678,7 @@ mod tests {
             forward_ports: vec![],
             post_create_command: None,
             post_attach_command: None,
+            hardened: false,
         };
 
         let preparation = provider.prepare(&config).await.unwrap();
@@ -690,6 +713,7 @@ mod tests {
             forward_ports: vec![],
             post_create_command: None,
             post_attach_command: None,
+            hardened: false,
         };
 
         let preparation = provider.prepare(&config).await.unwrap();

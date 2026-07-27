@@ -581,6 +581,7 @@ mod tests {
                 "echo".to_string(),
                 "post-attach".to_string(),
             ])),
+            hardened: false,
         }
     }
 
@@ -731,6 +732,7 @@ mod tests {
                     mount_path: PathBuf::from("/data"),
                 }],
                 workspace_mount_path: PathBuf::from("/workspace"),
+                hardened: false,
             })
         }
 

@@ -203,6 +203,8 @@ pub struct ResolvedConfig {
     pub post_create_command: Option<CommandDefinition>,
     #[serde(default)]
     pub post_attach_command: Option<CommandDefinition>,
+    #[serde(default)]
+    pub hardened: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -357,6 +359,7 @@ impl ConfigResolver {
             forward_ports,
             post_create_command,
             post_attach_command,
+            hardened: self.overrides.hardened,
         })
     }
 }
@@ -406,6 +409,7 @@ pub struct ConfigOverrides {
     pub workspace_folder: Option<PathBuf>,
     pub image_reference: Option<String>,
     pub env: Map<String, Value>,
+    pub hardened: bool,
 }
 
 impl ConfigOverrides {
