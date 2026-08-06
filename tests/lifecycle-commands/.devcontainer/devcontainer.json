@@ -1,0 +1,18 @@
+{
+  "name": "Lifecycle Commands Test",
+  "image": "alpine:3.19",
+  "initializeCommand": "echo 'Initialize: Running on host before container creation'",
+  "onCreateCommand": "echo 'OnCreate: Container created' > /tmp/oncreate.txt",
+  "updateContentCommand": "echo 'UpdateContent: Content updated' > /tmp/updatecontent.txt",
+  "postCreateCommand": [
+    "sh",
+    "-c",
+    "echo 'PostCreate: Setting up environment' > /tmp/postcreate.txt"
+  ],
+  "postStartCommand": {
+    "server": "echo 'PostStart: Container started' > /tmp/poststart.txt",
+    "version": "cat /etc/alpine-release > /tmp/version.txt"
+  },
+  "postAttachCommand": "echo 'PostAttach: Attached to container' > /tmp/postattach.txt",
+  "waitFor": "postCreateCommand"
+}

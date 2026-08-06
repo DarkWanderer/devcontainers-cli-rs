@@ -1,0 +1,5 @@
+{
+  "name": "Basic Image Test",
+  "image": "alpine:3.19",
+  "postCreateCommand": "echo 'Container created successfully'"
+}

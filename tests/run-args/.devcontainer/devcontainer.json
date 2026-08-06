@@ -1,0 +1,13 @@
+{
+  "name": "Run Args Test",
+  "image": "alpine:3.19",
+  "runArgs": [
+    "--hostname=devcontainer-test",
+    "--add-host=custom.local:127.0.0.1",
+    "--network=bridge",
+    "--dns=8.8.8.8",
+    "--memory=512m",
+    "--cpus=1.0"
+  ],
+  "postCreateCommand": "hostname > /tmp/hostname.txt && cat /etc/hosts | grep custom.local >> /tmp/hostname.txt"
+}

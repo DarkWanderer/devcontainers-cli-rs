@@ -1,0 +1,7 @@
+{
+  "name": "Workspace Folder Test",
+  "image": "alpine:3.19",
+  "workspaceFolder": "/custom/workspace/path",
+  "workspaceMount": "source=${localWorkspaceFolder},target=/custom/workspace/path,type=bind,consistency=cached",
+  "postCreateCommand": "pwd > /tmp/workspace.txt && echo ${containerWorkspaceFolder} >> /tmp/workspace.txt"
+}

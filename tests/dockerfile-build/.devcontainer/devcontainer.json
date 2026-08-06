@@ -1,0 +1,12 @@
+{
+  "name": "Dockerfile Build Test",
+  "build": {
+    "dockerfile": "Dockerfile",
+    "context": ".",
+    "args": {
+      "BASE_IMAGE": "alpine:3.19",
+      "BUILD_DATE": "2024-01-01"
+    }
+  },
+  "workspaceFolder": "/workspace"
+}

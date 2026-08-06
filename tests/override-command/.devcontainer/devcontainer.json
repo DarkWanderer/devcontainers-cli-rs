@@ -1,0 +1,6 @@
+{
+  "name": "Override Command Test",
+  "image": "alpine:3.19",
+  "overrideCommand": false,
+  "postCreateCommand": "ps aux > /tmp/processes.txt"
+}
